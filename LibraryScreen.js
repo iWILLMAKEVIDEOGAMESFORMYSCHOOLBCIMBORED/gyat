@@ -1,129 +1,95 @@
-/**
- * AudioPlayer.js
- *
- * Invisible component that handles actual audio playback using expo-av.
- * Supports both Google Drive MP3 streams and YouTube fallback.
- *
- * Mount this once inside MusicProvider — it watches currentSong & isPlaying
- * and controls the Audio.Sound object accordingly.
- */
+import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
+import { JUICE_WRLD_SONGS } from '../data/songs';
+import { fetchDriveSongs, GOOGLE_API_KEY } from '../services/GoogleDriveService';
 
-import { useEffect, useRef, useCallback } from 'react';
-import { Audio } from 'expo-av';
-import { useMusic } from '../context/MusicContext';
-import { getStreamUrl } from '../services/GoogleDriveService';
+const MusicContext = createContext(null);
 
-// Configure audio session for background playback
-Audio.setAudioModeAsync({
-  allowsRecordingIOS: false,
-  staysActiveInBackground: true,
-  interruptionModeIOS: 1, // DoNotMix
-  playsInSilentModeIOS: true,
-  shouldDuckAndroid: true,
-  interruptionModeAndroid: 1,
-  playThroughEarpieceAndroid: false,
-}).catch(() => {});
+export const MusicProvider = ({ children }) => {
+  const [allSongs, setAllSongs] = useState(JUICE_WRLD_SONGS);
+  const [driveLoaded, setDriveLoaded] = useState(false);
+  const [driveLoading, setDriveLoading] = useState(false);
+  const [driveError, setDriveError] = useState(null);
+  const [driveSongCount, setDriveSongCount] = useState(0);
 
-export default function AudioPlayer() {
-  const {
-    currentSong,
-    isPlaying,
-    setIsPlaying,
-    setProgress,
-    playNext,
-    soundRef,
-  } = useMusic();
+  const [currentSong, setCurrentSong] = useState(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [queue, setQueue] = useState([]);
+  const [queueIndex, setQueueIndex] = useState(0);
+  const [showPlayer, setShowPlayer] = useState(false);
+  const [playerExpanded, setPlayerExpanded] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [liked, setLiked] = useState([]);
+  const [recentlyPlayed, setRecentlyPlayed] = useState([]);
+  const soundRef = useRef(null);
 
-  const loadedSongIdRef = useRef(null);
-  const progressTimer = useRef(null);
+  useEffect(() => { loadDriveSongs(); }, []);
 
-  // ── Unload current sound ───────────────────────────────────
-  const unloadSound = useCallback(async () => {
-    if (progressTimer.current) {
-      clearInterval(progressTimer.current);
-      progressTimer.current = null;
-    }
-    if (soundRef.current) {
-      try {
-        await soundRef.current.stopAsync();
-        await soundRef.current.unloadAsync();
-      } catch (_) {}
-      soundRef.current = null;
-    }
-    loadedSongIdRef.current = null;
-  }, [soundRef]);
-
-  // ── Load and play a song ──────────────────────────────────
-  const loadAndPlay = useCallback(async (song) => {
-    await unloadSound();
-    if (!song) return;
-
-    // Determine the audio URI
-    // Priority: Drive stream URL > YouTube (no direct audio from YT without yt-dlp)
-    let uri = null;
-    if (song.source === 'googledrive' && song.driveFileId) {
-      uri = getStreamUrl(song.driveFileId);
-    } else if (song.streamUrl) {
-      uri = song.streamUrl;
-    }
-
-    if (!uri) {
-      console.warn('[AudioPlayer] No stream URL for:', song.title);
-      return;
-    }
-
+  const loadDriveSongs = async () => {
+    if (!GOOGLE_API_KEY || GOOGLE_API_KEY === 'YOUR_GOOGLE_DRIVE_API_KEY_HERE') return;
+    setDriveLoading(true);
+    setDriveError(null);
     try {
-      console.log('[AudioPlayer] Loading:', song.title);
-      const { sound } = await Audio.Sound.createAsync(
-        { uri },
-        { shouldPlay: true, progressUpdateIntervalMillis: 500 },
-        onPlaybackStatusUpdate
-      );
-      soundRef.current = sound;
-      loadedSongIdRef.current = song.id;
+      const driveSongs = await fetchDriveSongs();
+      if (driveSongs.length > 0) {
+        const releasedHardcoded = JUICE_WRLD_SONGS.filter(s => s.type === 'released');
+        setAllSongs([...releasedHardcoded, ...driveSongs]);
+        setDriveSongCount(driveSongs.length);
+        setDriveLoaded(true);
+      }
     } catch (err) {
-      console.error('[AudioPlayer] Load error:', err.message);
-      setIsPlaying(false);
+      setDriveError(err.message);
+    } finally {
+      setDriveLoading(false);
     }
-  }, [unloadSound, soundRef, setIsPlaying]);
+  };
 
-  // ── Playback status callback ──────────────────────────────
-  const onPlaybackStatusUpdate = useCallback((status) => {
-    if (!status.isLoaded) return;
+  const playSong = useCallback((song, songList = null) => {
+    const list = songList || allSongs;
+    const index = list.findIndex(s => s.id === song.id);
+    setQueue(list);
+    setQueueIndex(index >= 0 ? index : 0);
+    setCurrentSong(song);
+    setIsPlaying(true);
+    setShowPlayer(true);
+    setProgress(0);
+    setRecentlyPlayed(prev => [song, ...prev.filter(s => s.id !== song.id)].slice(0, 20));
+  }, [allSongs]);
 
-    if (status.didJustFinish) {
-      setIsPlaying(false);
-      setProgress(0);
-      playNext();
-      return;
-    }
+  const playNext = useCallback(() => {
+    if (!queue.length) return;
+    const i = (queueIndex + 1) % queue.length;
+    setQueueIndex(i); setCurrentSong(queue[i]); setIsPlaying(true); setProgress(0);
+  }, [queue, queueIndex]);
 
-    if (status.durationMillis && status.durationMillis > 0) {
-      setProgress(status.positionMillis / status.durationMillis);
-    }
-  }, [setIsPlaying, setProgress, playNext]);
+  const playPrev = useCallback(() => {
+    if (!queue.length) return;
+    const i = queueIndex === 0 ? queue.length - 1 : queueIndex - 1;
+    setQueueIndex(i); setCurrentSong(queue[i]); setIsPlaying(true); setProgress(0);
+  }, [queue, queueIndex]);
 
-  // ── React to song changes ─────────────────────────────────
-  useEffect(() => {
-    if (!currentSong) return;
-    if (currentSong.id === loadedSongIdRef.current) return; // already loaded
-    loadAndPlay(currentSong);
-  }, [currentSong]);
+  const togglePlay = useCallback(() => setIsPlaying(p => !p), []);
+  const toggleLike = useCallback((id) => setLiked(p => p.includes(id) ? p.filter(x => x !== id) : [...p, id]), []);
+  const isLiked = useCallback((id) => liked.includes(id), [liked]);
 
-  // ── React to play/pause changes ──────────────────────────
-  useEffect(() => {
-    if (!soundRef.current) return;
-    if (isPlaying) {
-      soundRef.current.playAsync().catch(() => {});
-    } else {
-      soundRef.current.pauseAsync().catch(() => {});
-    }
-  }, [isPlaying]);
+  return (
+    <MusicContext.Provider value={{
+      allSongs,
+      releasedSongs: allSongs.filter(s => s.type === 'released'),
+      unreleasedSongs: allSongs.filter(s => s.type === 'unreleased'),
+      driveLoaded, driveLoading, driveError, driveSongCount,
+      reloadDrive: loadDriveSongs,
+      currentSong, isPlaying, queue, showPlayer, playerExpanded,
+      progress, liked, recentlyPlayed, soundRef,
+      playSong, playNext, playPrev, togglePlay, toggleLike, isLiked,
+      setShowPlayer, setPlayerExpanded, setProgress, setIsPlaying,
+    }}>
+      {children}
+    </MusicContext.Provider>
+  );
+};
 
-  // ── Cleanup on unmount ────────────────────────────────────
-  useEffect(() => {
-    return () => { unloadSound(); };
-  }, []);
-
-  return null; // Invisible component
-}
+export const useMusic = () => {
+  const ctx = useContext(MusicContext);
+  if (!ctx) throw new Error('useMusic must be used within MusicProvider');
+  return ctx;
+};
