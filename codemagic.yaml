@@ -1,6 +1,6 @@
 workflows:
   ios-build:
-    name: Juiceify iOS Build
+    name: Juiceify iOS Build (Unsigned — for eSign)
     max_build_duration: 120
     instance_type: mac_mini_m1
 
@@ -8,9 +8,7 @@ workflows:
       node: 20.11.0
       xcode: latest
       cocoapods: default
-      ios_signing:
-        distribution_type: ad_hoc
-        bundle_identifier: com.hammerandchisel.juicewwrldf
+      # NO ios_signing block — we are building unsigned for eSign
 
     scripts:
       - name: Install dependencies
@@ -23,7 +21,7 @@ workflows:
           pip3 install Pillow --quiet
           python3 << 'PYEOF'
           import os
-          from PIL import Image, ImageDraw, ImageFont
+          from PIL import Image, ImageDraw
 
           OUT = os.path.join(os.environ['CM_BUILD_DIR'], 'assets')
           os.makedirs(OUT, exist_ok=True)
@@ -72,11 +70,12 @@ workflows:
           cd $CM_BUILD_DIR/ios
           pod install --repo-update
 
-      - name: Build and export signed IPA
+      - name: Build unsigned .app
         script: |
           set -e
           cd $CM_BUILD_DIR/ios
 
+          # Auto-detect workspace and scheme
           WORKSPACE=$(find . -maxdepth 1 -name "*.xcworkspace" -type d | head -1)
           SCHEME=$(xcodebuild -list -workspace "$WORKSPACE" 2>/dev/null \
             | awk '/Schemes:/,0' \
@@ -85,39 +84,51 @@ workflows:
             | head -1 \
             | sed 's/^[[:space:]]*//')
 
-          echo "Building: $WORKSPACE / $SCHEME"
+          echo "📦 Building: $WORKSPACE / $SCHEME (UNSIGNED)"
 
+          # Build Release for device — completely bypass code signing
           xcodebuild \
             -workspace "$WORKSPACE" \
             -scheme "$SCHEME" \
             -configuration Release \
             -sdk iphoneos \
             -archivePath "$CM_BUILD_DIR/Juiceify.xcarchive" \
-            archive
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            archive \
+            | xcpretty || true
 
-          cat > /tmp/ExportOptions.plist << 'PLIST'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>method</key>
-            <string>ad-hoc</string>
-            <key>compileBitcode</key>
-            <false/>
-            <key>thinning</key>
-            <string>&lt;none&gt;</string>
-          </dict>
-          </plist>
-          PLIST
+          echo "✅ Archive done"
+          ls -la "$CM_BUILD_DIR/Juiceify.xcarchive/Products/Applications/" || true
 
-          xcodebuild \
-            -exportArchive \
-            -archivePath "$CM_BUILD_DIR/Juiceify.xcarchive" \
-            -exportPath "$CM_EXPORT_DIR" \
-            -exportOptionsPlist /tmp/ExportOptions.plist
+      - name: Package unsigned IPA
+        script: |
+          set -e
 
-          ls -la "$CM_EXPORT_DIR"
-          echo "✅ Signed IPA ready"
+          ARCHIVE="$CM_BUILD_DIR/Juiceify.xcarchive"
+          APP_PATH=$(find "$ARCHIVE/Products/Applications" -name "*.app" -maxdepth 1 | head -1)
+
+          if [ -z "$APP_PATH" ]; then
+            echo "❌ No .app found in archive. Contents:"
+            find "$ARCHIVE" -name "*.app" | head -20
+            exit 1
+          fi
+
+          echo "📱 Found app: $APP_PATH"
+
+          # Build the IPA manually — this is what eSign needs
+          mkdir -p /tmp/ipabuild/Payload
+          cp -r "$APP_PATH" /tmp/ipabuild/Payload/
+
+          mkdir -p "$CM_EXPORT_DIR"
+          cd /tmp/ipabuild
+          zip -r "$CM_EXPORT_DIR/Juiceify.ipa" Payload
+
+          echo "✅ Unsigned IPA created:"
+          ls -lh "$CM_EXPORT_DIR/Juiceify.ipa"
 
     artifacts:
-      - $CM_EXPORT_DIR/*.ipa
+      - $CM_EXPORT_DIR/Juiceify.ipa
