@@ -10,6 +10,7 @@ workflows:
       cocoapods: default
       ios_signing:
         distribution_type: ad_hoc
+        bundle_identifier: com.hammerandchisel.juicewwrldf
 
     scripts:
       - name: Install dependencies
@@ -60,31 +61,6 @@ workflows:
           d.ellipse([0,0,47,47],fill=PUR2); grapes(d,24,23,16); img.save(f'{OUT}/favicon.png')
           print('All assets generated')
           PYEOF
-
-      - name: Set bundle ID from provisioning profile
-        script: |
-          # Read the bundle ID directly from the provisioning profile Codemagic installed
-          PROFILE_PATH=$(find "$HOME/Library/MobileDevice/Provisioning Profiles" -name "*.mobileprovision" 2>/dev/null | head -1)
-          echo "Profile: $PROFILE_PATH"
-
-          BUNDLE_ID=$(security cms -D -i "$PROFILE_PATH" 2>/dev/null \
-            | plutil -p - 2>/dev/null \
-            | grep -A1 "application-identifier" \
-            | tail -1 \
-            | sed 's/.*"\(.*\)".*/\1/' \
-            | sed 's/^[A-Z0-9]*\.//')
-
-          echo "Bundle ID from profile: $BUNDLE_ID"
-
-          # Update app.json with the real bundle ID
-          cd $CM_BUILD_DIR
-          node -e "
-            const fs = require('fs');
-            const cfg = JSON.parse(fs.readFileSync('app.json'));
-            cfg.expo.ios.bundleIdentifier = '$BUNDLE_ID';
-            fs.writeFileSync('app.json', JSON.stringify(cfg, null, 2));
-            console.log('Updated bundle ID to: $BUNDLE_ID');
-          "
 
       - name: Expo prebuild
         script: |

@@ -11,14 +11,19 @@
       "resizeMode": "contain",
       "backgroundColor": "#0A0A0F"
     },
-    "assetBundlePatterns": ["**/*"],
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.juiceify.app",
+      "bundleIdentifier": "com.hammerandchisel.juicewwrldf",
       "buildNumber": "1",
       "infoPlist": {
         "NSMicrophoneUsageDescription": "Juiceify uses audio playback.",
-        "UIBackgroundModes": ["audio", "remote-notification"]
+        "UIBackgroundModes": [
+          "audio",
+          "remote-notification"
+        ]
       }
     },
     "android": {
@@ -32,7 +37,12 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      ["expo-av", { "microphonePermission": false }]
+      [
+        "expo-av",
+        {
+          "microphonePermission": false
+        }
+      ]
     ]
   }
 }
