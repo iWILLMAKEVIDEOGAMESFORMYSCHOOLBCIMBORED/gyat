@@ -10,7 +10,7 @@ workflows:
       cocoapods: default
       ios_signing:
         distribution_type: ad_hoc
-        bundle_identifier: com.juiceify.app
+        bundle_identifier: com.hammerandchisel.juicewwrldf
 
     scripts:
       - name: Install dependencies
