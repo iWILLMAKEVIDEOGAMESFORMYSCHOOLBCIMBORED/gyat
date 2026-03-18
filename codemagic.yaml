@@ -8,6 +8,9 @@ workflows:
       node: 20.11.0
       xcode: latest
       cocoapods: default
+      ios_signing:
+        distribution_type: ad_hoc
+        bundle_identifier: com.juiceify.app
 
     scripts:
       - name: Install dependencies
@@ -69,46 +72,7 @@ workflows:
           cd $CM_BUILD_DIR/ios
           pod install --repo-update
 
-      - name: Create self-signed certificate
-        script: |
-          set -e
-
-          # Create a temporary keychain
-          security create-keychain -p "juiceify123" juiceify.keychain
-          security default-keychain -s juiceify.keychain
-          security unlock-keychain -p "juiceify123" juiceify.keychain
-          security set-keychain-settings -t 3600 -u juiceify.keychain
-
-          # Generate self-signed certificate using openssl
-          openssl req -x509 -newkey rsa:2048 -keyout /tmp/key.pem -out /tmp/cert.pem \
-            -days 365 -nodes \
-            -subj "/CN=Juiceify Dev/O=Juiceify/C=US"
-
-          # Convert to p12
-          openssl pkcs12 -export \
-            -inkey /tmp/key.pem \
-            -in /tmp/cert.pem \
-            -out /tmp/juiceify.p12 \
-            -passout pass:juiceify123 \
-            -name "Juiceify Dev"
-
-          # Import into keychain
-          security import /tmp/juiceify.p12 \
-            -k juiceify.keychain \
-            -P juiceify123 \
-            -T /usr/bin/codesign \
-            -A
-
-          security set-key-partition-list \
-            -S apple-tool:,apple:,codesign: \
-            -s -k "juiceify123" juiceify.keychain
-
-          # Get the identity name
-          IDENTITY=$(security find-identity -v -p codesigning juiceify.keychain | head -1 | awk -F'"' '{print $2}')
-          echo "Identity: $IDENTITY"
-          echo "$IDENTITY" > /tmp/signing_identity.txt
-
-      - name: Build and package IPA
+      - name: Build signed IPA
         script: |
           set -e
           cd $CM_BUILD_DIR/ios
@@ -123,74 +87,43 @@ workflows:
 
           echo "Building: $WORKSPACE / $SCHEME"
 
-          # Build unsigned
+          # Codemagic sets CM_CERTIFICATE and CM_PROVISIONING_PROFILE
+          # automatically when you upload them in the Code Signing tab
           xcodebuild \
             -workspace "$WORKSPACE" \
             -scheme "$SCHEME" \
             -configuration Release \
             -sdk iphoneos \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            build
+            -archivePath "$CM_BUILD_DIR/Juiceify.xcarchive" \
+            archive
 
-          # Find .app
-          APP_PATH=$(find "$HOME/Library/Developer/Xcode/DerivedData" \
-            -name "*.app" -type d \
-            -not -name "*.xctest" \
-            -not -path "*/Simulator/*" \
-            2>/dev/null | head -1)
+          # Export the IPA using the provisioning profile
+          cat > /tmp/ExportOptions.plist << 'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>ad-hoc</string>
+            <key>compileBitcode</key>
+            <false/>
+            <key>stripSwiftSymbols</key>
+            <true/>
+            <key>thinning</key>
+            <string>&lt;none&gt;</string>
+          </dict>
+          </plist>
+          PLIST
 
-          if [ -z "$APP_PATH" ]; then
-            APP_PATH=$(find "$HOME" \
-              -name "*.app" -type d \
-              -not -name "*.xctest" \
-              -not -path "*/Xcode.app/*" \
-              -not -path "*/Applications/*" \
-              -not -path "*/Simulator/*" \
-              2>/dev/null | head -1)
-          fi
+          xcodebuild \
+            -exportArchive \
+            -archivePath "$CM_BUILD_DIR/Juiceify.xcarchive" \
+            -exportPath "$CM_EXPORT_DIR" \
+            -exportOptionsPlist /tmp/ExportOptions.plist
 
-          echo "APP_PATH=$APP_PATH"
-
-          # Get signing identity
-          IDENTITY=$(cat /tmp/signing_identity.txt)
-          echo "Signing with: $IDENTITY"
-
-          # Sign inside-out: dylibs → frameworks → extensions → app
-          find "$APP_PATH" -name "*.dylib" 2>/dev/null | while read f; do
-            codesign --force --keychain juiceify.keychain --sign "$IDENTITY" "$f" 2>/dev/null || true
-          done
-
-          find "$APP_PATH/Frameworks" -name "*.framework" -type d 2>/dev/null | while read f; do
-            codesign --force --keychain juiceify.keychain --sign "$IDENTITY" "$f" 2>/dev/null || true
-          done
-
-          find "$APP_PATH/PlugIns" -name "*.appex" -type d 2>/dev/null | while read f; do
-            codesign --force --keychain juiceify.keychain --sign "$IDENTITY" "$f" 2>/dev/null || true
-          done
-
-          # Sign the app last
-          codesign --force --keychain juiceify.keychain --sign "$IDENTITY" "$APP_PATH"
-
-          # Verify
-          codesign --verify --deep --strict "$APP_PATH" && echo "✅ Signature valid" || echo "⚠️ Signature warning (ok for eSign)"
-
-          # Package IPA
-          PAYLOAD="$CM_BUILD_DIR/Payload"
-          rm -rf "$PAYLOAD"
-          mkdir -p "$PAYLOAD"
-          cp -r "$APP_PATH" "$PAYLOAD/"
-
-          mkdir -p "$CM_EXPORT_DIR"
-          cd "$CM_BUILD_DIR"
-          zip -r "$CM_EXPORT_DIR/Juiceify.ipa" Payload/ -x "*.DS_Store" -x "__MACOSX"
-          rm -rf "$PAYLOAD"
-
-          echo "=== IPA structure ==="
-          unzip -l "$CM_EXPORT_DIR/Juiceify.ipa" | grep "Payload" | head -5
-          du -sh "$CM_EXPORT_DIR/Juiceify.ipa"
-          echo "✅ IPA ready for eSign"
+          echo "=== Export directory ==="
+          ls -la "$CM_EXPORT_DIR"
+          echo "✅ Signed IPA ready"
 
     artifacts:
-      - $CM_EXPORT_DIR/Juiceify.ipa
+      - $CM_EXPORT_DIR/*.ipa
