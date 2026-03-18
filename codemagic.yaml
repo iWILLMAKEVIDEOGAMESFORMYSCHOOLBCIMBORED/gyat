@@ -1,0 +1,158 @@
+workflows:
+  ios-build:
+    name: Juiceify iOS Build
+    max_build_duration: 120
+    instance_type: mac_mini_m1
+
+    environment:
+      node: 20.11.0
+      xcode: latest
+      cocoapods: default
+
+    scripts:
+      - name: Install dependencies
+        script: |
+          cd $CM_BUILD_DIR
+          npm install
+
+      - name: Generate assets
+        script: |
+          pip3 install Pillow --quiet
+          python3 << 'PYEOF'
+          import os
+          from PIL import Image, ImageDraw, ImageFont
+
+          OUT = os.path.join(os.environ['CM_BUILD_DIR'], 'assets')
+          os.makedirs(OUT, exist_ok=True)
+          BG=(10,10,15); PUR=(155,89,182); PUR2=(108,52,131)
+
+          def grad(draw,w,h,c1,c2):
+            for y in range(h):
+              t=y/h; draw.line([(0,y),(w,y)],fill=tuple(int(c1[i]+(c2[i]-c1[i])*t) for i in range(3)))
+
+          def grapes(draw,cx,cy,R):
+            gr=R*0.18
+            pos=[(cx,cy-R*.30),(cx-R*.22,cy-R*.10),(cx+R*.22,cy-R*.10),(cx-R*.34,cy+R*.12),(cx,cy+R*.12),(cx+R*.34,cy+R*.12),(cx-R*.17,cy+R*.34),(cx+R*.17,cy+R*.34),(cx,cy+R*.52)]
+            for px,py in pos: draw.ellipse([px-gr-3,py-gr-3,px+gr+3,py+gr+3],fill=(50,15,70))
+            for i,(px,py) in enumerate(pos):
+              t=i/len(pos); c=tuple(int(PUR[j]*(1-t)+PUR2[j]*t) for j in range(3))
+              draw.ellipse([px-gr,py-gr,px+gr,py+gr],fill=c)
+              hr=gr*.35; draw.ellipse([px-hr*.7,py-gr*.65,px+hr*.1,py-gr*.1],fill=(210,160,230))
+            draw.line([(cx,cy-R*.42),(cx,cy-R*.56)],fill=(90,150,50),width=max(2,int(R*.045)))
+            lx,ly,lr=cx+R*.12,cy-R*.53,R*.11
+            draw.ellipse([lx-lr,ly-lr*.55,lx+lr,ly+lr*.55],fill=(70,140,45))
+
+          S=1024; img=Image.new('RGB',(S,S)); d=ImageDraw.Draw(img)
+          grad(d,S,S,(26,10,46),BG); d.ellipse([S*.13,S*.09,S*.87,S*.83],fill=(22,8,38))
+          grapes(d,S//2,S//2-int(S*.04),int(S*.32)); img.save(f'{OUT}/icon.png')
+
+          W,H=1284,2778; img=Image.new('RGB',(W,H)); d=ImageDraw.Draw(img)
+          grad(d,W,H,(26,10,46),BG); cx2,cy2=W//2,H//2-int(H*.06)
+          d.ellipse([cx2-int(W*.32),cy2-int(W*.34),cx2+int(W*.32),cy2+int(W*.20)],fill=(22,8,38))
+          grapes(d,cx2,cy2,int(W*.27)); img.save(f'{OUT}/splash.png')
+
+          S2=432; img=Image.new('RGBA',(S2,S2),(0,0,0,0)); d=ImageDraw.Draw(img)
+          grapes(d,S2//2,S2//2,int(S2*.42)); img.save(f'{OUT}/adaptive-icon.png')
+
+          img=Image.new('RGBA',(48,48),(0,0,0,0)); d=ImageDraw.Draw(img)
+          d.ellipse([0,0,47,47],fill=PUR2); grapes(d,24,23,16); img.save(f'{OUT}/favicon.png')
+          print('All assets generated')
+          PYEOF
+
+      - name: Expo prebuild
+        script: |
+          cd $CM_BUILD_DIR
+          npx expo prebuild --platform ios --clean --no-install
+
+      - name: Install CocoaPods
+        script: |
+          cd $CM_BUILD_DIR/ios
+          pod install --repo-update
+
+      - name: Build and package IPA
+        script: |
+          set -e
+          cd $CM_BUILD_DIR/ios
+
+          WORKSPACE=$(find . -maxdepth 1 -name "*.xcworkspace" -type d | head -1)
+          SCHEME=$(xcodebuild -list -workspace "$WORKSPACE" 2>/dev/null \
+            | awk '/Schemes:/,0' \
+            | grep -v "Schemes:" \
+            | grep -v "^[[:space:]]*$" \
+            | head -1 \
+            | sed 's/^[[:space:]]*//')
+
+          echo "Building: workspace=$WORKSPACE scheme=$SCHEME"
+
+          # Build
+          xcodebuild \
+            -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+          # Find the .app in DerivedData
+          APP_PATH=$(find "$HOME/Library/Developer/Xcode/DerivedData" \
+            -name "*.app" -type d \
+            -not -name "*.xctest" \
+            -not -path "*/Simulator/*" \
+            2>/dev/null | head -1)
+
+          # Fallback search
+          if [ -z "$APP_PATH" ]; then
+            APP_PATH=$(find "$HOME" \
+              -name "*.app" -type d \
+              -not -name "*.xctest" \
+              -not -path "*/Xcode.app/*" \
+              -not -path "*/Applications/*" \
+              -not -path "*/Simulator/*" \
+              2>/dev/null | head -1)
+          fi
+
+          echo "Found .app: $APP_PATH"
+          ls "$APP_PATH"
+
+          # ── Sign everything inside-out so eSign can import it ──
+
+          # 1. Sign dylibs
+          find "$APP_PATH" -name "*.dylib" 2>/dev/null | while read f; do
+            codesign --force --sign - "$f" 2>/dev/null || true
+          done
+
+          # 2. Sign each framework bundle
+          find "$APP_PATH/Frameworks" -name "*.framework" -type d 2>/dev/null | while read f; do
+            codesign --force --sign - "$f" 2>/dev/null || true
+          done
+
+          # 3. Sign each extension
+          find "$APP_PATH/PlugIns" -name "*.appex" -type d 2>/dev/null | while read f; do
+            codesign --force --sign - "$f" 2>/dev/null || true
+          done
+
+          # 4. Sign the .app itself last
+          codesign --force --sign - "$APP_PATH"
+
+          echo "Signed: $(codesign -dv "$APP_PATH" 2>&1 | grep -E 'Identifier|Authority' | head -3)"
+
+          # ── Package IPA ──
+          PAYLOAD="$CM_BUILD_DIR/Payload"
+          rm -rf "$PAYLOAD"
+          mkdir -p "$PAYLOAD"
+          cp -r "$APP_PATH" "$PAYLOAD/"
+
+          mkdir -p "$CM_EXPORT_DIR"
+          cd "$CM_BUILD_DIR"
+          zip -r "$CM_EXPORT_DIR/Juiceify.ipa" Payload/ -x "*.DS_Store" -x "__MACOSX"
+          rm -rf "$PAYLOAD"
+
+          echo "=== IPA structure ==="
+          unzip -l "$CM_EXPORT_DIR/Juiceify.ipa" | grep "Payload" | head -5
+          du -sh "$CM_EXPORT_DIR/Juiceify.ipa"
+          echo "✅ Done — ready for eSign"
+
+    artifacts:
+      - $CM_EXPORT_DIR/Juiceify.ipa
