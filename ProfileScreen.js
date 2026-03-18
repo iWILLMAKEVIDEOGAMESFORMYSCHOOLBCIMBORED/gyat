@@ -1,60 +1,59 @@
-import React from 'react';
-import { NavigationContainer } from '@react-navigation/native';
-import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import React, { useEffect, useRef } from 'react';
+import { View, Text, StyleSheet, Animated, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useMusic } from '../context/MusicContext';
 
-import HomeScreen from '../screens/HomeScreen';
-import SearchScreen from '../screens/SearchScreen';
-import LibraryScreen from '../screens/LibraryScreen';
-import LikedScreen from '../screens/LikedScreen';
-import ProfileScreen from '../screens/ProfileScreen';
+export default function DriveStatusBanner() {
+  const { driveLoading, driveLoaded, driveError, driveSongCount, reloadDrive } = useMusic();
+  const opacity = useRef(new Animated.Value(0)).current;
+  const visible = driveLoading || driveError;
 
-const Tab = createBottomTabNavigator();
+  useEffect(() => {
+    Animated.timing(opacity, {
+      toValue: visible ? 1 : 0,
+      duration: 300,
+      useNativeDriver: true,
+    }).start();
+  }, [visible]);
 
-const ICONS = {
-  Home:    { active: 'home',          inactive: 'home-outline' },
-  Search:  { active: 'search',        inactive: 'search-outline' },
-  Library: { active: 'library',       inactive: 'library-outline' },
-  Liked:   { active: 'heart',         inactive: 'heart-outline' },
-  Profile: { active: 'person-circle', inactive: 'person-circle-outline' },
-};
+  if (!visible && !driveLoaded) return null;
 
-export default function AppNavigator() {
   return (
-    <NavigationContainer>
-      <Tab.Navigator
-        screenOptions={({ route }) => ({
-          tabBarIcon: ({ focused, color }) => {
-            const icons = ICONS[route.name];
-            return (
-              <Ionicons
-                name={focused ? icons.active : icons.inactive}
-                size={24}
-                color={color}
-              />
-            );
-          },
-          tabBarActiveTintColor: '#9B59B6',
-          tabBarInactiveTintColor: '#444',
-          tabBarStyle: {
-            position: 'absolute',
-            backgroundColor: 'rgba(10,10,15,0.95)',
-            borderTopColor: 'rgba(155,89,182,0.2)',
-            borderTopWidth: 1,
-            height: 54,
-            paddingBottom: 6,
-            paddingTop: 6,
-          },
-          tabBarLabelStyle: { fontSize: 10, fontWeight: '600', marginTop: 1 },
-          headerShown: false,
-        })}
-      >
-        <Tab.Screen name="Home"    component={HomeScreen}    />
-        <Tab.Screen name="Search"  component={SearchScreen}  />
-        <Tab.Screen name="Library" component={LibraryScreen} />
-        <Tab.Screen name="Liked"   component={LikedScreen}   />
-        <Tab.Screen name="Profile" component={ProfileScreen} />
-      </Tab.Navigator>
-    </NavigationContainer>
+    <Animated.View style={[styles.banner, { opacity }]}>
+      {driveLoading && (
+        <View style={styles.row}>
+          <Ionicons name="cloud-download-outline" size={14} color="#D7BDE2" />
+          <Text style={styles.text}>Loading songs from your Drive...</Text>
+        </View>
+      )}
+      {driveError && (
+        <TouchableOpacity style={styles.row} onPress={reloadDrive}>
+          <Ionicons name="warning-outline" size={14} color="#E74C3C" />
+          <Text style={[styles.text, { color: '#E74C3C' }]}>Drive error — tap to retry</Text>
+        </TouchableOpacity>
+      )}
+      {driveLoaded && !driveLoading && (
+        <View style={styles.row}>
+          <Ionicons name="checkmark-circle-outline" size={14} color="#2ECC71" />
+          <Text style={[styles.text, { color: '#2ECC71' }]}>
+            {driveSongCount} songs loaded from your Drive 🍇
+          </Text>
+        </View>
+      )}
+    </Animated.View>
   );
 }
+
+const styles = StyleSheet.create({
+  banner: {
+    position: 'absolute',
+    top: 0, left: 0, right: 0,
+    backgroundColor: 'rgba(26,10,46,0.95)',
+    paddingVertical: 8, paddingHorizontal: 16,
+    zIndex: 9999,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(155,89,182,0.3)',
+  },
+  row: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  text: { color: '#D7BDE2', fontSize: 12, fontWeight: '500' },
+});

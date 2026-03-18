@@ -1,60 +1,129 @@
-import React from 'react';
-import { NavigationContainer } from '@react-navigation/native';
-import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { Ionicons } from '@expo/vector-icons';
+/**
+ * AudioPlayer.js
+ *
+ * Invisible component that handles actual audio playback using expo-av.
+ * Supports both Google Drive MP3 streams and YouTube fallback.
+ *
+ * Mount this once inside MusicProvider — it watches currentSong & isPlaying
+ * and controls the Audio.Sound object accordingly.
+ */
 
-import HomeScreen from '../screens/HomeScreen';
-import SearchScreen from '../screens/SearchScreen';
-import LibraryScreen from '../screens/LibraryScreen';
-import LikedScreen from '../screens/LikedScreen';
-import ProfileScreen from '../screens/ProfileScreen';
+import { useEffect, useRef, useCallback } from 'react';
+import { Audio } from 'expo-av';
+import { useMusic } from '../context/MusicContext';
+import { getStreamUrl } from '../services/GoogleDriveService';
 
-const Tab = createBottomTabNavigator();
+// Configure audio session for background playback
+Audio.setAudioModeAsync({
+  allowsRecordingIOS: false,
+  staysActiveInBackground: true,
+  interruptionModeIOS: 1, // DoNotMix
+  playsInSilentModeIOS: true,
+  shouldDuckAndroid: true,
+  interruptionModeAndroid: 1,
+  playThroughEarpieceAndroid: false,
+}).catch(() => {});
 
-const ICONS = {
-  Home:    { active: 'home',          inactive: 'home-outline' },
-  Search:  { active: 'search',        inactive: 'search-outline' },
-  Library: { active: 'library',       inactive: 'library-outline' },
-  Liked:   { active: 'heart',         inactive: 'heart-outline' },
-  Profile: { active: 'person-circle', inactive: 'person-circle-outline' },
-};
+export default function AudioPlayer() {
+  const {
+    currentSong,
+    isPlaying,
+    setIsPlaying,
+    setProgress,
+    playNext,
+    soundRef,
+  } = useMusic();
 
-export default function AppNavigator() {
-  return (
-    <NavigationContainer>
-      <Tab.Navigator
-        screenOptions={({ route }) => ({
-          tabBarIcon: ({ focused, color }) => {
-            const icons = ICONS[route.name];
-            return (
-              <Ionicons
-                name={focused ? icons.active : icons.inactive}
-                size={24}
-                color={color}
-              />
-            );
-          },
-          tabBarActiveTintColor: '#9B59B6',
-          tabBarInactiveTintColor: '#444',
-          tabBarStyle: {
-            position: 'absolute',
-            backgroundColor: 'rgba(10,10,15,0.95)',
-            borderTopColor: 'rgba(155,89,182,0.2)',
-            borderTopWidth: 1,
-            height: 54,
-            paddingBottom: 6,
-            paddingTop: 6,
-          },
-          tabBarLabelStyle: { fontSize: 10, fontWeight: '600', marginTop: 1 },
-          headerShown: false,
-        })}
-      >
-        <Tab.Screen name="Home"    component={HomeScreen}    />
-        <Tab.Screen name="Search"  component={SearchScreen}  />
-        <Tab.Screen name="Library" component={LibraryScreen} />
-        <Tab.Screen name="Liked"   component={LikedScreen}   />
-        <Tab.Screen name="Profile" component={ProfileScreen} />
-      </Tab.Navigator>
-    </NavigationContainer>
-  );
+  const loadedSongIdRef = useRef(null);
+  const progressTimer = useRef(null);
+
+  // ── Unload current sound ───────────────────────────────────
+  const unloadSound = useCallback(async () => {
+    if (progressTimer.current) {
+      clearInterval(progressTimer.current);
+      progressTimer.current = null;
+    }
+    if (soundRef.current) {
+      try {
+        await soundRef.current.stopAsync();
+        await soundRef.current.unloadAsync();
+      } catch (_) {}
+      soundRef.current = null;
+    }
+    loadedSongIdRef.current = null;
+  }, [soundRef]);
+
+  // ── Load and play a song ──────────────────────────────────
+  const loadAndPlay = useCallback(async (song) => {
+    await unloadSound();
+    if (!song) return;
+
+    // Determine the audio URI
+    // Priority: Drive stream URL > YouTube (no direct audio from YT without yt-dlp)
+    let uri = null;
+    if (song.source === 'googledrive' && song.driveFileId) {
+      uri = getStreamUrl(song.driveFileId);
+    } else if (song.streamUrl) {
+      uri = song.streamUrl;
+    }
+
+    if (!uri) {
+      console.warn('[AudioPlayer] No stream URL for:', song.title);
+      return;
+    }
+
+    try {
+      console.log('[AudioPlayer] Loading:', song.title);
+      const { sound } = await Audio.Sound.createAsync(
+        { uri },
+        { shouldPlay: true, progressUpdateIntervalMillis: 500 },
+        onPlaybackStatusUpdate
+      );
+      soundRef.current = sound;
+      loadedSongIdRef.current = song.id;
+    } catch (err) {
+      console.error('[AudioPlayer] Load error:', err.message);
+      setIsPlaying(false);
+    }
+  }, [unloadSound, soundRef, setIsPlaying]);
+
+  // ── Playback status callback ──────────────────────────────
+  const onPlaybackStatusUpdate = useCallback((status) => {
+    if (!status.isLoaded) return;
+
+    if (status.didJustFinish) {
+      setIsPlaying(false);
+      setProgress(0);
+      playNext();
+      return;
+    }
+
+    if (status.durationMillis && status.durationMillis > 0) {
+      setProgress(status.positionMillis / status.durationMillis);
+    }
+  }, [setIsPlaying, setProgress, playNext]);
+
+  // ── React to song changes ─────────────────────────────────
+  useEffect(() => {
+    if (!currentSong) return;
+    if (currentSong.id === loadedSongIdRef.current) return; // already loaded
+    loadAndPlay(currentSong);
+  }, [currentSong]);
+
+  // ── React to play/pause changes ──────────────────────────
+  useEffect(() => {
+    if (!soundRef.current) return;
+    if (isPlaying) {
+      soundRef.current.playAsync().catch(() => {});
+    } else {
+      soundRef.current.pauseAsync().catch(() => {});
+    }
+  }, [isPlaying]);
+
+  // ── Cleanup on unmount ────────────────────────────────────
+  useEffect(() => {
+    return () => { unloadSound(); };
+  }, []);
+
+  return null; // Invisible component
 }
